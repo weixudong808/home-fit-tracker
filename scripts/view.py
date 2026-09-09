@@ -223,10 +223,56 @@ def build_dashboard(config):
     return path
 
 
+def take_shot(dashboard_path, width=430, height=1800, scale=2):
+    """无头浏览器把看板 HTML 截成 PNG（远程/IM 部署时发给用户，file:// 链接在聊天软件里点不开）。
+    返回 (图片路径, None) 或 (None, 错误信息)。找不到浏览器不算崩溃，把人话错误交还给 AI 转述。"""
+    import shutil
+    import subprocess
+    browser = None
+    for name in ("chromium-browser", "chromium", "google-chrome", "chrome", "msedge"):
+        browser = shutil.which(name)
+        if browser:
+            break
+    if not browser:
+        return None, "本机没装 chromium/chrome，截不了图；请安装 chromium 或改用本地 file:// 看板"
+    out = dashboard_path.with_name(dashboard_path.stem + ".png")
+    cmd = [browser, "--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+           "--force-device-scale-factor=%s" % scale,
+           "--screenshot=%s" % out, "--window-size=%s,%s" % (width, height),
+           dashboard_path.resolve().as_uri()]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        return None, "截图超时（90秒），浏览器可能被环境卡住，可重跑一次"
+    if not out.exists():
+        tail = (r.stderr or r.stdout or "").strip()[-200:]
+        return None, "截图失败：%s" % (tail or "未知原因")
+    return out, None
+
+
 def main():
     config = fl.load_config()
     path = build_dashboard(config)
-    fl.out({"ok": True, "dashboard_path": str(path)})
+    if "--shot" not in sys.argv:
+        fl.out({"ok": True, "dashboard_path": str(path)})
+        return
+    width = height = None
+    for i, a in enumerate(sys.argv):
+        if a == "--shot-width" and i + 1 < len(sys.argv):
+            width = int(sys.argv[i + 1])
+        if a == "--shot-height" and i + 1 < len(sys.argv):
+            height = int(sys.argv[i + 1])
+    kwargs = {}
+    if width:
+        kwargs["width"] = width
+    if height:
+        kwargs["height"] = height
+    img, err = take_shot(path, **kwargs)
+    if err:
+        fl.out({"ok": False, "error": err, "dashboard_path": str(path)})
+        return
+    fl.out({"ok": True, "action": "shot", "image_path": str(img), "dashboard_path": str(path),
+            "message": "看板截图已生成，用宿主平台的图片消息发给用户（发图后补一句\"看板已更新\"）"})
 
 
 if __name__ == "__main__":
